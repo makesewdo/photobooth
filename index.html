@@ -50,6 +50,9 @@ details summary{cursor:pointer;color:var(--muted)}
 #count{font-family:var(--display);font-size:min(45vw,45vh);color:var(--pumpkin);line-height:1;text-shadow:0 0 30px #000,0 0 6px #000}
 #prompt{font-family:var(--display);font-size:clamp(2rem,8vw,4rem);color:#fff;text-shadow:0 2px 12px #000;max-width:18ch}
 #shotInfo{font:800 1.2rem var(--body);color:#fff;text-shadow:0 1px 6px #000}
+#waveZone{position:absolute;border:3px dashed var(--slime);border-radius:12px;pointer-events:none;display:flex;align-items:flex-end;justify-content:center;
+  font:800 .8rem var(--body);color:var(--slime);text-shadow:0 1px 4px #000;padding-bottom:4px;transition:background-color .15s}
+#waveZone.active{background:rgba(155,225,93,.35)}
 #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .35s}
 #flash.on{opacity:1;transition:none}
 #boothBar{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:8px;
@@ -127,6 +130,19 @@ details summary{cursor:pointer;color:var(--muted)}
   </div>
 
   <div class="panel">
+    <h2>Wave to start (backup trigger)</h2>
+    <p style="margin:0;color:var(--muted)">Waving a hand inside a marked box starts the countdown. Put the box above people's heads (stick a sign or a paper pumpkin there) so posing doesn't set it off. The dashed box shows on the booth screen so you can line it up.</p>
+    <div class="row">
+      <label>Wave box
+        <select id="wave"><option value="off">Off</option><option value="left">Top-left of screen</option><option value="right">Top-right of screen</option></select>
+      </label>
+      <label>Sensitivity
+        <select id="waveSens"><option value="24">Low (fewer false starts)</option><option value="16" selected>Medium</option><option value="10">High</option></select>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel">
     <h2>3 · Strip text</h2>
     <div class="row">
       <label>Top line <input id="t1" value="KELLY IS 40"></label>
@@ -158,6 +174,7 @@ details summary{cursor:pointer;color:var(--muted)}
 
 <section id="booth" hidden>
   <video id="video" playsinline muted autoplay></video>
+  <div id="waveZone" hidden>WAVE HERE</div>
   <div id="flash"></div>
   <div id="overlay">
     <div id="shotInfo"></div>
@@ -180,7 +197,7 @@ function log(...a){ const s=a.join(" "); console.log(s); const el=$("log"); el.t
 function setStatus(msg, cls){ const el=$("pStatus"); el.textContent=msg; el.className="status "+(cls||""); $("pChip").textContent = msg; }
 
 /* ---------- saved settings ---------- */
-const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn"];
+const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn","wave","waveSens"];
 try{ const s=JSON.parse(localStorage.getItem("booth")||"{}"); for(const k of SAVE_IDS) if(s[k]!=null) $(k).value=s[k]; }catch(e){}
 function saveSettings(){ try{ const s={}; for(const k of SAVE_IDS) s[k]=$(k).value; localStorage.setItem("booth",JSON.stringify(s)); }catch(e){} }
 for(const k of SAVE_IDS) $(k).addEventListener("change", saveSettings);
@@ -602,8 +619,55 @@ async function runSession(){
       log("Printing is off: photos saved, no strip printed");
     }
     await sleep(2500); // let people read the message, then ready for the next group
-  }finally{ busy=false; if(!$("booth").hidden) idle(); }
+  }finally{ busy=false; waveCooldownUntil=Date.now()+4000; if(!$("booth").hidden) idle(); }
 }
+/* ---------- wave to start ---------- */
+const wcv=document.createElement("canvas"); wcv.width=80; wcv.height=60;
+const wctx=wcv.getContext("2d",{willReadFrequently:true});
+let prevLum=null, waveHits=0, waveCooldownUntil=0;
+function waveZoneDisplay(){ // zone as fractions of the displayed picture
+  const side=$("wave").value; if(side==="off") return null;
+  return { x: side==="left"?0.04:0.72, y:0.04, w:0.24, h:0.28 };
+}
+function placeWaveZone(){
+  const z=waveZoneDisplay(), el=$("waveZone");
+  if(!z || !video.videoWidth){ el.hidden=true; return; }
+  const cw=video.clientWidth, ch=video.clientHeight, vw=video.videoWidth, vh=video.videoHeight;
+  const sc=Math.max(cw/vw, ch/vh), dw=vw*sc, dh=vh*sc, ox=(cw-dw)/2, oy=(ch-dh)/2;
+  Object.assign(el.style,{ left:(ox+z.x*dw)+"px", top:(oy+z.y*dh)+"px", width:(z.w*dw)+"px", height:(z.h*dh)+"px" });
+  el.hidden=false;
+}
+window.addEventListener("resize", placeWaveZone);
+video.addEventListener("loadedmetadata", placeWaveZone);
+function waveTick(){
+  const z=waveZoneDisplay();
+  if($("booth").hidden || !z || !video.videoWidth){ prevLum=null; waveHits=0; return; }
+  placeWaveZone();
+  wctx.drawImage(video,0,0,80,60);
+  const d=wctx.getImageData(0,0,80,60).data, lum=new Uint8Array(4800);
+  for(let i=0;i<4800;i++) lum[i]=(d[i*4]*3+d[i*4+1]*6+d[i*4+2])/10;
+  if(prevLum){
+    const mirror=$("facing").value==="user";
+    const fx = mirror ? 1-z.x-z.w : z.x;  // display box → camera-frame box
+    const x0=Math.floor(fx*80), x1=Math.ceil((fx+z.w)*80), y0=Math.floor(z.y*60), y1=Math.ceil((z.y+z.h)*60);
+    let zs=0,zn=0,gs=0;
+    for(let y=0;y<60;y++) for(let x=0;x<80;x++){
+      const i=y*80+x, df=Math.abs(lum[i]-prevLum[i]); gs+=df;
+      if(x>=x0&&x<x1&&y>=y0&&y<y1){ zs+=df; zn++; }
+    }
+    const zone=zs/Math.max(1,zn), global=gs/4800, thr=+$("waveSens").value;
+    // movement in the box, but not the whole picture changing (lighting, someone walking past the lens)
+    const moving = zone>thr && zone>2.5*global;
+    waveHits = moving ? waveHits+1 : Math.max(0, waveHits-1);
+    $("waveZone").classList.toggle("active", moving);
+    if(waveHits>=4 && !busy && Date.now()>waveCooldownUntil){
+      waveHits=0; log("Wave detected"); runSession();
+    }
+  }
+  prevLum=lum;
+}
+setInterval(waveTick, 120);
+
 // Tap anywhere, or any key from a Bluetooth remote / keyboard.
 $("booth").addEventListener("click", runSession);
 document.addEventListener("keydown", e=>{
