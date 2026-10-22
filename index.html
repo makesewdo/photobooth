@@ -83,6 +83,7 @@ details summary{cursor:pointer;color:var(--muted)}
             <option value="auto">Auto-detect</option>
             <option value="classic">Classic cat printer (GB01/MX family)</option>
             <option value="mxw">MXW01 family</option>
+            <option value="escpos">Receipt-style (ESC/POS)</option>
           </select>
         </label>
         <label>Darkness <span id="darkVal"></span>
@@ -226,16 +227,44 @@ async function writeChunked(ch, data, size, delay){
   }
 }
 
+// Services used by common mini thermal printers (cat printers, Phomemo/iPrint-style, generic BLE serial)
+const OPT_SERVICES=[0xae30,0xaf30,0xae3a,0xff00,0x18f0,0xffe0,0xfee7,0xff80,
+  "49535343-fe7d-4ae5-8fa9-9fafd205e455","e7810a71-73ae-499d-8c15-faa9aef0c3f2","0000ffe5-0000-1000-8000-00805f9b34fb"];
+async function dumpServices(server){
+  try{
+    for(const sv of await server.getPrimaryServices()){
+      const cs=await sv.getCharacteristics();
+      log("Service "+sv.uuid+": "+cs.map(c=>c.uuid.slice(4,8)+"["+(c.properties.write?"w":"")+(c.properties.writeWithoutResponse?"W":"")+(c.properties.notify?"n":"")+"]").join(" "));
+    }
+  }catch(e){ log("Service list failed: "+e.message); }
+}
 async function gattConnect(){
   const server = await P.device.gatt.connect();
-  let svc;
-  try{ svc = await server.getPrimaryService(0xae30); }catch(e){ svc = await server.getPrimaryService(0xaf30); }
-  P.ch1 = await svc.getCharacteristic(0xae01);
-  P.ch2 = await svc.getCharacteristic(0xae02);
-  try{ P.ch3 = await svc.getCharacteristic(0xae03); }catch(e){ P.ch3=null; }
-  await P.ch2.startNotifications();
-  P.ch2.removeEventListener("characteristicvaluechanged", onNotify);
-  P.ch2.addEventListener("characteristicvaluechanged", onNotify);
+  let svc=null;
+  try{ svc = await server.getPrimaryService(0xae30); }catch(e){ try{ svc = await server.getPrimaryService(0xaf30); }catch(_){} }
+  if(svc){
+    P.esc=false;
+    P.ch1 = await svc.getCharacteristic(0xae01);
+    P.ch2 = await svc.getCharacteristic(0xae02);
+    try{ P.ch3 = await svc.getCharacteristic(0xae03); }catch(e){ P.ch3=null; }
+  } else {
+    // Not a cat printer: find the first writable characteristic (and a notify one if there is one)
+    await dumpServices(server);
+    P.esc=true; P.ch1=null; P.ch2=null; P.ch3=null;
+    for(const sv of await server.getPrimaryServices()){
+      for(const c of await sv.getCharacteristics()){
+        if(!P.ch1 && (c.properties.writeWithoutResponse||c.properties.write)) P.ch1=c;
+        if(!P.ch2 && c.properties.notify) P.ch2=c;
+      }
+      if(P.ch1) break;
+    }
+    if(!P.ch1) throw new Error("No writable channel found on this printer");
+  }
+  if(P.ch2){
+    try{ await P.ch2.startNotifications(); }catch(e){}
+    P.ch2.removeEventListener("characteristicvaluechanged", onNotify);
+    P.ch2.addEventListener("characteristicvaluechanged", onNotify);
+  }
 }
 async function ensureConnected(){
   if(!P.device) throw new Error("No printer chosen yet");
@@ -244,6 +273,7 @@ async function ensureConnected(){
 async function detectKind(){
   const pref=$("proto").value;
   if(pref!=="auto") return pref;
+  if(P.esc) return "escpos";
   if(/^MXW/i.test(P.device.name||"")) return "mxw";
   if(P.ch3){
     // Ask for status the MXW01 way; only MXW01-family firmware answers with a 22 21 frame.
@@ -258,18 +288,19 @@ $("btnConnect").onclick = async ()=>{
   if(!navigator.bluetooth){ setStatus("This browser can't use Bluetooth. Open the page in Chrome on Android over https.","bad"); return; }
   try{
     setStatus("Choose your printer in the list…");
-    P.device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices:[0xae30,0xaf30,0xae3a] });
+    P.device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices:OPT_SERVICES });
     P.device.addEventListener("gattserverdisconnected", ()=>log("Printer disconnected (normal between prints)"));
     await gattConnect();
     P.kind = await detectKind();
     try{ localStorage.setItem("boothPrinter", JSON.stringify({id:P.device.id, name:P.device.name, kind:P.kind})); }catch(e){}
     log("Device: "+(P.device.name||"?")+" · protocol: "+P.kind);
-    setStatus("Connected to "+(P.device.name||"printer")+" ("+(P.kind==="mxw"?"MXW01":"classic")+" protocol)","ok");
+    setStatus("Connected to "+(P.device.name||"printer")+" ("+kindName(P.kind)+" protocol)","ok");
     $("btnTest").disabled=false;
   }catch(e){ log("Connect failed: "+e.message); setStatus("Couldn't connect: "+e.message+". Check the printer is on and Fun Print is closed, then try again.","bad"); }
 };
 
 /* ---------- print jobs ---------- */
+const kindName = k => k==="mxw" ? "MXW01" : k==="escpos" ? "receipt-style" : "classic";
 function blankRows(n){ return Array.from({length:n},()=>new Uint8Array(BPR)); }
 
 async function printClassic(rows){
@@ -307,6 +338,27 @@ async function printMxw(rows){
   if(!await done) log("No print-complete reply within 60 s");
 }
 
+async function printEscPos(rows){
+  const delay=+$("delay").value;
+  // ESC/POS raster: bit 7 is the leftmost dot, so mirror our LSB-first rows
+  const rev=b=>{ let r=0; for(let i=0;i<8;i++) if(b&(1<<i)) r|=1<<(7-i); return r; };
+  const parts=[Uint8Array.from([0x1b,0x40])]; // initialise
+  for(let y=0;y<rows.length;y+=200){
+    const band=rows.slice(y,y+200);
+    parts.push(Uint8Array.from([0x1d,0x76,0x30,0x00,BPR,0x00,band.length&0xff,band.length>>8]));
+    for(const r of band) parts.push(Uint8Array.from(r,rev));
+  }
+  parts.push(Uint8Array.from([0x1b,0x64,0x05])); // feed 5 lines
+  const data=concat(parts);
+  const size=P.ch1.properties.writeWithoutResponse?120:100;
+  for(let i=0;i<data.length;i+=size){
+    const chunk=data.slice(i,i+size);
+    if(P.ch1.properties.writeWithoutResponse) await P.ch1.writeValueWithoutResponse(chunk); else await P.ch1.writeValue(chunk);
+    await sleep(delay);
+  }
+  await sleep(Math.max(2000, rows.length*6));
+}
+
 let printing=false;
 const queue=[];
 // Strips wait here and print one after another, so the booth can keep taking photos meanwhile
@@ -331,7 +383,9 @@ async function printCanvas(cv){
     await ensureConnected();
     if(!P.kind) P.kind = await detectKind();
     setStatus("Printing…","warn");
-    if(P.kind==="mxw") await printMxw(rows); else await printClassic(rows);
+    if(P.kind==="mxw") await printMxw(rows);
+    else if(P.kind==="escpos"){ if(!P.esc) throw new Error("This printer is a cat printer; set Protocol to Auto-detect"); await printEscPos(rows); }
+    else { if(P.esc) throw new Error("This printer isn't a cat printer; set Protocol to Auto-detect or Receipt-style"); await printClassic(rows); }
     setStatus("Printer ready ("+(P.device.name||"printer")+")","ok");
   }catch(e){ log("Print failed: "+e.message); setStatus("Print failed: "+e.message,"bad"); }
   finally{ printing=false; }
@@ -430,7 +484,7 @@ $("btnTest").onclick = async ()=>{
   ditherCanvas(cv);
   ctx.fillStyle="#000"; ctx.textAlign="center";
   ctx.font="800 26px Rubik, sans-serif"; ctx.fillText("▲ TOP OF STRIP ▲", W/2, 40);
-  ctx.font="18px Rubik, sans-serif"; ctx.fillText("Booth test · "+(P.kind==="mxw"?"MXW01":"classic")+" · darkness "+$("dark").value, W/2, 80);
+  ctx.font="18px Rubik, sans-serif"; ctx.fillText("Booth test · "+kindName(P.kind)+" · darkness "+$("dark").value, W/2, 80);
   ctx.fillText("Gradient should run black → white:", W/2, 130);
   ctx.strokeRect(12,260,W-24,40); ctx.fillText("Box edges should be sharp", W/2, 287);
   drawBat(ctx,W/2,360,2);
@@ -580,7 +634,7 @@ async function restorePrinter(){
     const finish=async()=>{
       await gattConnect();
       P.kind = $("proto").value!=="auto" ? $("proto").value : (saved.kind || await detectKind());
-      setStatus("Reconnected to "+(d.name||"printer")+" ("+(P.kind==="mxw"?"MXW01":"classic")+" protocol)","ok");
+      setStatus("Reconnected to "+(d.name||"printer")+" ("+kindName(P.kind)+" protocol)","ok");
       $("btnTest").disabled=false; log("Restored printer "+d.name);
     };
     try{ await finish(); }
