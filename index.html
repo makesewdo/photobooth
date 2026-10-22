@@ -549,7 +549,10 @@ document.addEventListener("keydown", e=>{
     return;
   }
   if(e.key==="Escape"){ exitBooth(); return; }
-  e.preventDefault(); log("Booth trigger key: key="+e.key+" code="+e.code); runSession();
+  e.preventDefault();
+  log(new Date().toLocaleTimeString("en-NZ")+" remote/key: key="+e.key+" code="+e.code+(busy?" (ignored, booth busy)":""));
+  unlockAudio(); beep(busy?300:1500, 60, 0.25); // short chirp so you can hear every press arrive, low buzz if the booth is busy
+  runSession();
 });
 
 // After a reload, reconnect to the printer chosen before (needs Chrome's remembered-device support)
