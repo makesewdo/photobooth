@@ -111,6 +111,9 @@ details summary{cursor:pointer;color:var(--muted)}
       <label>Shots per strip
         <select id="shots"><option>2</option><option selected>3</option><option>4</option></select>
       </label>
+      <label>Countdown beeps
+        <select id="beep"><option value="1">On</option><option value="0">Off</option></select>
+      </label>
       <label>Countdown (s)
         <select id="cd"><option>2</option><option selected>3</option><option>5</option></select>
       </label>
@@ -171,7 +174,7 @@ function log(...a){ const s=a.join(" "); console.log(s); const el=$("log"); el.t
 function setStatus(msg, cls){ const el=$("pStatus"); el.textContent=msg; el.className="status "+(cls||""); $("pChip").textContent = msg; }
 
 /* ---------- saved settings ---------- */
-const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour"];
+const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep"];
 try{ const s=JSON.parse(localStorage.getItem("booth")||"{}"); for(const k of SAVE_IDS) if(s[k]!=null) $(k).value=s[k]; }catch(e){}
 function saveSettings(){ try{ const s={}; for(const k of SAVE_IDS) s[k]=$(k).value; localStorage.setItem("booth",JSON.stringify(s)); }catch(e){} }
 for(const k of SAVE_IDS) $(k).addEventListener("change", saveSettings);
@@ -419,7 +422,18 @@ $("btnTest").onclick = async ()=>{
 };
 
 /* ---------- booth ---------- */
-let stream=null, busy=false, wakeLock=null;
+let stream=null, busy=false, wakeLock=null, actx=null;
+function unlockAudio(){ try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==="suspended") actx.resume(); }catch(e){} }
+function beep(freq, ms, vol){
+  if($("beep").value!=="1" || !actx) return;
+  try{
+    const o=actx.createOscillator(), g=actx.createGain(), t=actx.currentTime;
+    o.type="square"; o.frequency.value=freq;
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(vol||0.4,t+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+ms/1000);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t+ms/1000+0.02);
+  }catch(e){}
+}
 const video=$("video");
 
 async function startCamera(){
@@ -432,6 +446,7 @@ async function keepAwake(){ try{ wakeLock = await navigator.wakeLock?.request("s
 document.addEventListener("visibilitychange",()=>{ if(!$("booth").hidden && document.visibilityState==="visible") keepAwake(); });
 
 $("btnStart").onclick = async ()=>{
+  unlockAudio();
   try{
     $("booth").hidden=false; $("setup").hidden=true;
     try{ await document.documentElement.requestFullscreen?.(); }catch(e){}
@@ -456,6 +471,7 @@ function grab(){
   c.getContext("2d").drawImage(video,0,0); return c;
 }
 async function runSession(){
+  unlockAudio();
   if(busy || $("booth").hidden) return;
   if(printing){ $("prompt").textContent="Hang on, still printing…"; return; }
   busy=true;
@@ -464,8 +480,9 @@ async function runSession(){
     for(let s=1;s<=n;s++){
       $("prompt").textContent = s===1 ? "Get ready!" : "Next pose!";
       $("shotInfo").textContent = "Photo "+s+" of "+n;
-      for(let c=cd;c>0;c--){ $("count").textContent=c; await sleep(1000); }
+      for(let c=cd;c>0;c--){ $("count").textContent=c; beep(c===1?880:660, 160); await sleep(1000); }
       $("count").textContent="";
+      beep(1320, 350, 0.5);
       const shot=grab(); photos.push(shot); savePhoto(shot, $("facing").value==="user");
       const f=$("flash"); f.classList.add("on"); await sleep(60); f.classList.remove("on");
       await sleep(700);
