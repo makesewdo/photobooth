@@ -15,7 +15,7 @@
   color-scheme:dark;
 }
 *{box-sizing:border-box}
-html,body{height:100%;margin:0}
+html,body{height:100%;margin:0;overscroll-behavior:none}
 body{background:var(--night);color:var(--text);font:16px/1.45 var(--body);
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 [hidden]{display:none!important}
@@ -40,7 +40,7 @@ details summary{cursor:pointer;color:var(--muted)}
 #lastStrip{max-width:192px;image-rendering:pixelated;border:1px solid var(--line);background:#fff}
 
 /* Booth */
-#booth{position:fixed;inset:0;background:#000;z-index:5}
+#booth{position:fixed;inset:0;background:#000;z-index:5;touch-action:none;user-select:none;-webkit-user-select:none}
 #video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 #video.mirror{transform:scaleX(-1)}
 #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;
@@ -160,7 +160,7 @@ details summary{cursor:pointer;color:var(--muted)}
   </div>
   <div id="boothBar">
     <span id="pChip"></span>
-    <button id="btnExit">Exit</button>
+    <button id="btnExit">Hold to exit</button>
   </div>
 </section>
 
@@ -259,6 +259,7 @@ $("btnConnect").onclick = async ()=>{
     P.device.addEventListener("gattserverdisconnected", ()=>log("Printer disconnected (normal between prints)"));
     await gattConnect();
     P.kind = await detectKind();
+    try{ localStorage.setItem("boothPrinter", JSON.stringify({id:P.device.id, name:P.device.name, kind:P.kind})); }catch(e){}
     log("Device: "+(P.device.name||"?")+" · protocol: "+P.kind);
     setStatus("Connected to "+(P.device.name||"printer")+" ("+(P.kind==="mxw"?"MXW01":"classic")+" protocol)","ok");
     $("btnTest").disabled=false;
@@ -478,7 +479,14 @@ function exitBooth(){
   try{ if(document.fullscreenElement) document.exitFullscreen(); }catch(e){}
   $("booth").hidden=true; $("setup").hidden=false;
 }
-$("btnExit").onclick = e=>{ e.stopPropagation(); exitBooth(); };
+// Exit only after holding the button for 2 s, so a stray tap can't close the booth
+let exitTimer=null;
+const exitBtn=$("btnExit");
+exitBtn.addEventListener("click", e=>e.stopPropagation());
+exitBtn.addEventListener("pointerdown", e=>{ e.stopPropagation(); exitBtn.textContent="Keep holding…"; exitTimer=setTimeout(()=>{ exitBtn.textContent="Hold to exit"; exitBooth(); },2000); });
+for(const ev of ["pointerup","pointerleave","pointercancel"]) exitBtn.addEventListener(ev, ()=>{ clearTimeout(exitTimer); exitBtn.textContent="Hold to exit"; });
+// Ask before the page is reloaded or closed while the booth is running
+window.addEventListener("beforeunload", e=>{ if(!$("booth").hidden || P.device){ e.preventDefault(); e.returnValue=""; } });
 
 function idle(){ $("count").textContent=""; $("shotInfo").textContent=""; $("prompt").textContent = printing ? "Printing your strip…" : "Press the button!"; }
 
@@ -522,6 +530,38 @@ document.addEventListener("keydown", e=>{
   if(e.key==="Escape"){ exitBooth(); return; }
   e.preventDefault(); log("Booth trigger key: key="+e.key+" code="+e.code); runSession();
 });
+
+// After a reload, reconnect to the printer chosen before (needs Chrome's remembered-device support)
+async function restorePrinter(){
+  let saved=null; try{ saved=JSON.parse(localStorage.getItem("boothPrinter")||"null"); }catch(e){}
+  if(!saved) return;
+  if(!navigator.bluetooth || !navigator.bluetooth.getDevices){
+    setStatus("Tap Connect printer to reconnect to "+(saved.name||"the printer")+" (this Chrome can't reconnect by itself)","warn"); return;
+  }
+  try{
+    const devs=await navigator.bluetooth.getDevices();
+    const d=devs.find(x=>x.id===saved.id) || devs.find(x=>x.name===saved.name);
+    if(!d){ setStatus("Tap Connect printer to reconnect to "+(saved.name||"the printer"),"warn"); return; }
+    P.device=d;
+    d.addEventListener("gattserverdisconnected", ()=>log("Printer disconnected (normal between prints)"));
+    setStatus("Reconnecting to "+(d.name||"printer")+"…","warn");
+    const finish=async()=>{
+      await gattConnect();
+      P.kind = $("proto").value!=="auto" ? $("proto").value : (saved.kind || await detectKind());
+      setStatus("Reconnected to "+(d.name||"printer")+" ("+(P.kind==="mxw"?"MXW01":"classic")+" protocol)","ok");
+      $("btnTest").disabled=false; log("Restored printer "+d.name);
+    };
+    try{ await finish(); }
+    catch(e){
+      if(d.watchAdvertisements){
+        log("Waiting for the printer to appear…");
+        d.addEventListener("advertisementreceived", async ()=>{ try{ d.unwatchAdvertisements?.(); }catch(_){} try{ await finish(); }catch(err){ log("Reconnect failed: "+err.message); } }, {once:true});
+        await d.watchAdvertisements();
+      } else throw e;
+    }
+  }catch(e){ log("Restore failed: "+e.message); setStatus("Tap Connect printer to reconnect","warn"); }
+}
+restorePrinter();
 
 log("Ready. Web Bluetooth "+(navigator.bluetooth?"available":"NOT available")+", secure context: "+window.isSecureContext);
 </script>
