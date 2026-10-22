@@ -480,12 +480,13 @@ async function runSession(){
     for(let s=1;s<=n;s++){
       $("prompt").textContent = s===1 ? "Get ready!" : "Next pose!";
       $("shotInfo").textContent = "Photo "+s+" of "+n;
-      for(let c=cd;c>0;c--){ $("count").textContent=c; beep(c===1?880:660, 160); await sleep(1000); }
+      if(s===1){ for(let c=cd;c>0;c--){ $("count").textContent=c; beep(c===1?880:660, 160); await sleep(1000); } }
+      else { await sleep(1500); } // quick gap to change pose, no countdown
       $("count").textContent="";
       beep(1320, 350, 0.5);
       const shot=grab(); photos.push(shot); savePhoto(shot, $("facing").value==="user");
       const f=$("flash"); f.classList.add("on"); await sleep(60); f.classList.remove("on");
-      await sleep(700);
+      await sleep(250);
     }
     $("shotInfo").textContent=""; $("prompt").textContent="Printing your strip…";
     const mirror=$("facing").value==="user";
