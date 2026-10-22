@@ -199,6 +199,7 @@ function setStatus(msg, cls){ const el=$("pStatus"); el.textContent=msg; el.clas
 /* ---------- saved settings ---------- */
 const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn","wave","waveSens"];
 try{ const s=JSON.parse(localStorage.getItem("booth")||"{}"); for(const k of SAVE_IDS) if(s[k]!=null) $(k).value=s[k]; }catch(e){}
+for(const k of SAVE_IDS){ const el=$(k); if(el.tagName==="SELECT" && el.selectedIndex<0) el.selectedIndex=0; } // old saved values that no longer exist
 function saveSettings(){ try{ const s={}; for(const k of SAVE_IDS) s[k]=$(k).value; localStorage.setItem("booth",JSON.stringify(s)); }catch(e){} }
 for(const k of SAVE_IDS) $(k).addEventListener("change", saveSettings);
 const showVals=()=>{ $("darkVal").textContent=$("dark").value; $("brightVal").textContent=$("bright").value; };
@@ -627,7 +628,7 @@ const wctx=wcv.getContext("2d",{willReadFrequently:true});
 let prevLum=null, waveHits=0, waveCooldownUntil=0;
 // Bar across the top of what's visible on screen, as fractions of the screen
 const WAVE_BAR={ x:0.02, y:0.02, w:0.96, h:0.2 };
-function waveOn(){ const v=$("wave").value; return v!=="off"; }
+function waveOn(){ return $("wave").value==="top"; }
 function placeWaveZone(){
   const el=$("waveZone");
   if(!waveOn() || !video.videoWidth){ el.hidden=true; return; }
