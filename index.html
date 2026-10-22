@@ -15,7 +15,9 @@
   color-scheme:dark;
 }
 *{box-sizing:border-box}
-html,body{height:100%;margin:0;overscroll-behavior:none}
+html,body{margin:0}
+body.booth-on{overflow:hidden}
+html:has(body.booth-on){overscroll-behavior:none}
 body{background:var(--night);color:var(--text);font:16px/1.45 var(--body);
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 [hidden]{display:none!important}
@@ -544,7 +546,7 @@ document.addEventListener("visibilitychange",()=>{ if(!$("booth").hidden && docu
 $("btnStart").onclick = async ()=>{
   unlockAudio();
   try{
-    $("booth").hidden=false; $("setup").hidden=true;
+    $("booth").hidden=false; $("setup").hidden=true; document.body.classList.add("booth-on");
     try{ await document.documentElement.requestFullscreen?.(); }catch(e){}
     await startCamera(); keepAwake();
     if(!P.device) setStatus("No printer connected: photos will be taken but not printed","warn");
@@ -556,7 +558,7 @@ function exitBooth(){
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
   try{ wakeLock?.release(); }catch(e){}
   try{ if(document.fullscreenElement) document.exitFullscreen(); }catch(e){}
-  $("booth").hidden=true; $("setup").hidden=false;
+  $("booth").hidden=true; $("setup").hidden=false; document.body.classList.remove("booth-on");
 }
 // Exit only after holding the button for 2 s, so a stray tap can't close the booth
 let exitTimer=null;
