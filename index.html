@@ -459,7 +459,17 @@ async function startCamera(){
   video.srcObject=stream; await video.play();
   video.classList.toggle("mirror", $("facing").value==="user");
 }
-async function keepAwake(){ try{ wakeLock = await navigator.wakeLock?.request("screen"); }catch(e){} }
+// Keep the screen on while the booth is open; re-take the lock whenever Android drops it
+async function keepAwake(){
+  if($("booth").hidden || !("wakeLock" in navigator)) return;
+  if(wakeLock && !wakeLock.released) return;
+  try{
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", ()=>{ log("Screen lock released"); setTimeout(keepAwake, 1000); });
+    log("Screen will stay on");
+  }catch(e){ log("Screen wake lock refused: "+e.message); }
+}
+setInterval(keepAwake, 30000);
 document.addEventListener("visibilitychange",()=>{ if(!$("booth").hidden && document.visibilityState==="visible") keepAwake(); });
 
 $("btnStart").onclick = async ()=>{
@@ -495,7 +505,7 @@ function grab(){
   c.getContext("2d").drawImage(video,0,0); return c;
 }
 async function runSession(){
-  unlockAudio();
+  unlockAudio(); keepAwake();
   if(busy || $("booth").hidden) return;
   if(printing){ $("prompt").textContent="Hang on, still printing…"; return; }
   busy=true;
