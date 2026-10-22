@@ -124,15 +124,14 @@ details summary{cursor:pointer;color:var(--muted)}
       <label>Second line <input id="t2" value="Halloween · 31.10.2026"></label>
     </div>
     <label>Bottom line <input id="t3" value="Thanks for haunting with us!"></label>
-    <label><span>Also save colour photos to the phone</span>
-      <select id="saveColour"><option value="1">Yes, one image per strip</option><option value="0">No</option></select>
+    <label><span>Save full-colour photos to the phone</span>
+      <select id="saveColour"><option value="1">Yes, every photo</option><option value="0">No</option></select>
     </label>
   </div>
 
   <div class="panel">
-    <h2>4 · Remote check</h2>
-    <p style="margin:0">Press the button on the Bluetooth remote now. If the page can hear it, the key it sends shows here and it will work in the booth.</p>
-    <div id="keySeen" class="status warn">Nothing received yet</div>
+    <h2>4 · Remote</h2>
+    <p style="margin:0">The remote only works once the booth screen is open (full screen). Start the booth and press it to test; tapping the screen works too.</p>
   </div>
 
   <button id="btnStart" class="go">Start the booth</button>
@@ -369,12 +368,15 @@ function cover(ctx,src,sw,sh,dx,dy,dw,dh,mirror){
   ctx.restore();
 }
 function buildStrip(photos, mirror){
-  const PH=288, GAP=10, HEAD=110, FOOT=70, M=12;
-  const h = HEAD + photos.length*(PH+GAP) + FOOT;
+  const GAP=10, HEAD=110, FOOT=70, M=12, BW=W-2*M;
+  // each photo keeps its own shape: portrait shots print tall, landscape shots print wide
+  const hs = photos.map(p=>Math.round(BW*Math.min(1.5, Math.max(0.5, p.height/p.width))));
+  const tops=[]; let y=HEAD; for(const ph of hs){ tops.push(y); y+=ph+GAP; }
+  const h = y + FOOT;
   const cv=document.createElement("canvas"); cv.width=W; cv.height=h;
   const ctx=cv.getContext("2d");
   ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,h);
-  photos.forEach((p,i)=>cover(ctx,p,p.width,p.height,M,HEAD+i*(PH+GAP),W-2*M,PH,mirror));
+  photos.forEach((p,i)=>cover(ctx,p,p.width,p.height,M,tops[i],BW,hs[i],mirror));
   ditherCanvas(cv);
   // crisp text and art drawn after dithering
   ctx.fillStyle="#000"; ctx.textAlign="center";
@@ -386,17 +388,18 @@ function buildStrip(photos, mirror){
   ctx.fillText(t.toLocaleTimeString("en-NZ",{hour:"numeric",minute:"2-digit"}), W/2, h-FOOT+56);
   return cv;
 }
-function saveColourStrip(photos, mirror){
+let saveCount=0;
+function savePhoto(c, mirror){
   if($("saveColour").value!=="1") return;
-  const PW=1080, PH=810, GAP=24;
-  const cv=document.createElement("canvas"); cv.width=PW+2*GAP; cv.height=photos.length*(PH+GAP)+GAP;
-  const ctx=cv.getContext("2d"); ctx.fillStyle="#120e18"; ctx.fillRect(0,0,cv.width,cv.height);
-  photos.forEach((p,i)=>cover(ctx,p,p.width,p.height,GAP,GAP+i*(PH+GAP),PW,PH,mirror));
-  cv.toBlob(b=>{
+  let out=c;
+  if(mirror){ out=document.createElement("canvas"); out.width=c.width; out.height=c.height;
+    const x=out.getContext("2d"); x.translate(c.width,0); x.scale(-1,1); x.drawImage(c,0,0); }
+  out.toBlob(b=>{
+    if(!b) return;
     const a=document.createElement("a"), stamp=new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
-    a.href=URL.createObjectURL(b); a.download="booth-"+stamp+".jpg"; document.body.appendChild(a); a.click();
-    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-  },"image/jpeg",0.9);
+    a.href=URL.createObjectURL(b); a.download="booth-"+stamp+"-"+(++saveCount)+".jpg"; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 8000);
+  },"image/jpeg",0.92);
 }
 
 /* ---------- test print ---------- */
@@ -463,13 +466,12 @@ async function runSession(){
       $("shotInfo").textContent = "Photo "+s+" of "+n;
       for(let c=cd;c>0;c--){ $("count").textContent=c; await sleep(1000); }
       $("count").textContent="";
-      photos.push(grab());
+      const shot=grab(); photos.push(shot); savePhoto(shot, $("facing").value==="user");
       const f=$("flash"); f.classList.add("on"); await sleep(60); f.classList.remove("on");
       await sleep(700);
     }
     $("shotInfo").textContent=""; $("prompt").textContent="Printing your strip…";
     const mirror=$("facing").value==="user";
-    saveColourStrip(photos, mirror);
     const strip=buildStrip(photos, mirror);
     busy=false;
     await printCanvas(strip);
@@ -480,12 +482,11 @@ $("booth").addEventListener("click", runSession);
 document.addEventListener("keydown", e=>{
   if($("booth").hidden){
     if(e.target.matches && e.target.matches("input,select")) return;
-    const k=$("keySeen"); k.textContent="Remote works ✓ (sent \""+(e.key||e.code)+"\")"; k.className="status ok";
     log("Key in setup: key="+e.key+" code="+e.code+" keyCode="+e.keyCode);
     return;
   }
   if(e.key==="Escape"){ exitBooth(); return; }
-  e.preventDefault(); log("Key: "+(e.key||e.code)); runSession();
+  e.preventDefault(); log("Booth trigger key: key="+e.key+" code="+e.code); runSession();
 });
 
 log("Ready. Web Bluetooth "+(navigator.bluetooth?"available":"NOT available")+", secure context: "+window.isSecureContext);
