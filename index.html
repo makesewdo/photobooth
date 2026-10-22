@@ -67,6 +67,9 @@ details summary{cursor:pointer;color:var(--muted)}
 
   <div class="panel">
     <h2>1 · Printer</h2>
+    <label><span>Print strips</span>
+      <select id="printOn"><option value="1">On: print every strip</option><option value="0">Off: just take and save photos</option></select>
+    </label>
     <div class="row">
       <button id="btnConnect" class="primary">Connect printer</button>
       <button id="btnTest" disabled>Test print</button>
@@ -174,7 +177,7 @@ function log(...a){ const s=a.join(" "); console.log(s); const el=$("log"); el.t
 function setStatus(msg, cls){ const el=$("pStatus"); el.textContent=msg; el.className="status "+(cls||""); $("pChip").textContent = msg; }
 
 /* ---------- saved settings ---------- */
-const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep"];
+const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn"];
 try{ const s=JSON.parse(localStorage.getItem("booth")||"{}"); for(const k of SAVE_IDS) if(s[k]!=null) $(k).value=s[k]; }catch(e){}
 function saveSettings(){ try{ const s={}; for(const k of SAVE_IDS) s[k]=$(k).value; localStorage.setItem("booth",JSON.stringify(s)); }catch(e){} }
 for(const k of SAVE_IDS) $(k).addEventListener("change", saveSettings);
@@ -534,9 +537,14 @@ async function runSession(){
       await sleep(250);
     }
     $("shotInfo").textContent="";
-    $("prompt").textContent = (printing||queue.length) ? "Your strip is in the print queue!" : "Printing your strip!";
     const mirror=$("facing").value==="user";
-    enqueuePrint(buildStrip(photos, mirror));
+    if($("printOn").value==="1"){
+      $("prompt").textContent = (printing||queue.length) ? "Your strip is in the print queue!" : "Printing your strip!";
+      enqueuePrint(buildStrip(photos, mirror));
+    } else {
+      $("prompt").textContent = "Got it!";
+      log("Printing is off: photos saved, no strip printed");
+    }
     await sleep(2500); // let people read the message, then ready for the next group
   }finally{ busy=false; if(!$("booth").hidden) idle(); }
 }
