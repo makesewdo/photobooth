@@ -156,7 +156,19 @@ details summary{cursor:pointer;color:var(--muted)}
 
   <div class="panel">
     <h2>4 · Remote</h2>
-    <p style="margin:0">The remote only works once the booth screen is open (full screen). Start the booth and press it to test; tapping the screen works too.</p>
+    <p style="margin:0">The Bluetooth remote only works once the booth screen is open (full screen). Start the booth and press it to test; tapping the screen works too.</p>
+  </div>
+
+  <div class="panel">
+    <h2>5 · Phone remote</h2>
+    <p style="margin:0">Use a second phone as the button. On it, open <b>makesewdo.github.io/photobooth/remote.html</b> and type this code. Both phones need internet (wifi or mobile data).</p>
+    <div class="row" style="align-items:baseline">
+      <span style="font:800 2.4rem/1 var(--body);letter-spacing:.12em;color:var(--pumpkin);font-variant-numeric:tabular-nums" id="rCode">····</span>
+      <span id="rStatus" class="status warn">Starting…</span>
+    </div>
+    <div class="row">
+      <button id="btnNewCode">New code</button>
+    </div>
   </div>
 
   <button id="btnStart" class="go">Start the booth</button>
@@ -182,11 +194,12 @@ details summary{cursor:pointer;color:var(--muted)}
     <div id="prompt">Press the button!</div>
   </div>
   <div id="boothBar">
-    <span id="pChip"></span>
+    <span style="display:flex;flex-direction:column;gap:2px"><span id="pChip"></span><span id="rChip" style="font-size:.8rem;color:#fff;text-shadow:0 1px 4px #000"></span></span>
     <button id="btnExit">Hold to exit</button>
   </div>
 </section>
 
+<script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -719,6 +732,65 @@ async function restorePrinter(){
   }catch(e){ log("Restore failed: "+e.message); setStatus("Tap Connect printer to reconnect","warn"); }
 }
 restorePrinter();
+
+/* ---------- phone remote (PeerJS over the internet) ---------- */
+const RPRE="kelly40-booth-";
+const R={ peer:null, conns:new Set(), code:null };
+function rSet(msg, cls){ $("rStatus").textContent=msg; $("rStatus").className="status "+(cls||""); updateRChip(); }
+function updateRChip(){
+  const n=[...R.conns].filter(c=>c.open).length;
+  $("rChip").textContent = R.code ? (n ? "Phone remote connected" : "Remote code "+R.code) : "";
+}
+function getCode(fresh){
+  let c=null; try{ c=localStorage.getItem("boothRemoteCode"); }catch(e){}
+  if(fresh || !/^\d{4}$/.test(c||"")){ c=String(1000+Math.floor(Math.random()*9000)); try{ localStorage.setItem("boothRemoteCode",c); }catch(e){} }
+  return c;
+}
+function boothState(){
+  if($("booth").hidden) return "setup";
+  return busy ? "busy" : "ready";
+}
+function rBroadcast(msg){ for(const c of R.conns) if(c.open) try{ c.send(msg); }catch(e){} }
+function startRemote(fresh){
+  if(typeof Peer==="undefined"){ rSet("Phone remote unavailable (couldn't load the connection library; check internet)","bad"); return; }
+  try{ R.peer && R.peer.destroy(); }catch(e){}
+  R.conns.clear();
+  R.code=getCode(fresh); $("rCode").textContent=R.code;
+  rSet("Connecting…","warn");
+  const peer=new Peer(RPRE+R.code, { debug:1 });
+  R.peer=peer;
+  peer.on("open", ()=>{ rSet("Ready: waiting for the remote phone","ok"); log("Phone remote ready, code "+R.code); });
+  peer.on("connection", conn=>{
+    conn.on("open", ()=>{
+      R.conns.add(conn); log("Phone remote connected");
+      rSet("Remote phone connected ✓","ok");
+      conn.send({type:"state", state:boothState()});
+    });
+    conn.on("data", d=>{
+      if(!d || d.type!=="shoot") return;
+      const st=boothState();
+      log("Phone remote press ("+st+")");
+      if(st==="ready"){ conn.send({type:"ack", result:"started"}); runSession(); }
+      else conn.send({type:"ack", result:st});
+    });
+    const gone=()=>{ R.conns.delete(conn); updateRChip(); if(![...R.conns].some(c=>c.open)) rSet("Ready: waiting for the remote phone","ok"); };
+    conn.on("close", gone); conn.on("error", gone);
+  });
+  peer.on("disconnected", ()=>{ log("Phone remote: lost the connection service, retrying"); rSet("Reconnecting…","warn"); setTimeout(()=>{ try{ if(!peer.destroyed) peer.reconnect(); }catch(e){} }, 2000); });
+  peer.on("error", err=>{
+    log("Phone remote error: "+err.type);
+    if(err.type==="unavailable-id"){ rSet("Code in use, picking a new one…","warn"); setTimeout(()=>startRemote(true), 500); }
+    else if(err.type==="network" || err.type==="server-error" || err.type==="socket-error" || err.type==="socket-closed"){
+      rSet("No connection to the remote service, retrying…","warn");
+      setTimeout(()=>{ if(R.peer===peer) startRemote(false); }, 5000);
+    }
+  });
+}
+$("btnNewCode").onclick=()=>startRemote(true);
+// tell connected remotes when the booth becomes ready/busy
+let lastState=null;
+setInterval(()=>{ const st=boothState(); if(st!==lastState){ lastState=st; rBroadcast({type:"state", state:st}); } updateRChip(); }, 400);
+startRemote(false);
 
 log("Ready. Web Bluetooth "+(navigator.bluetooth?"available":"NOT available")+", secure context: "+window.isSecureContext);
 </script>

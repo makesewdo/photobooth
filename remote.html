@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Booth Remote</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Creepster&family=Rubik:wght@400;600;800&display=swap">
+<style>
+/* Layout: one screen. Code entry, then a giant pumpkin button filling the middle. Single dark look by choice. */
+:root{
+  --night:#120e18; --panel:#1d1726; --line:#3a2f48; --text:#f3ecff; --muted:#b7a9cc;
+  --pumpkin:#ff8a1f; --pumpkinDeep:#c95f00; --slime:#9be15d; --blood:#ff4d5e;
+  --display:"Creepster","Rubik",system-ui,sans-serif; --body:"Rubik",system-ui,-apple-system,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overscroll-behavior:none}
+body{background:var(--night);color:var(--text);font:16px/1.45 var(--body);
+  padding:env(safe-area-inset-top,0px) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0px) max(16px,env(safe-area-inset-left,0px));
+  display:flex;flex-direction:column;align-items:center;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+h1{font-family:var(--display);font-weight:400;color:var(--pumpkin);font-size:2.6rem;margin:.5em 0 .1em;letter-spacing:.02em}
+#setup{width:100%;max-width:420px;display:flex;flex-direction:column;gap:14px;padding-block:8px}
+#setup p{margin:0;color:var(--muted)}
+label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:.95rem}
+input{font:800 2.4rem var(--body);letter-spacing:.3em;text-align:center;background:var(--panel);color:var(--text);border:2px solid var(--line);border-radius:12px;padding:12px;width:100%;-webkit-user-select:text;user-select:text}
+button{font:800 1.15rem var(--body);border:0;border-radius:12px;padding:16px;background:var(--pumpkin);color:#1a0d00;cursor:pointer}
+button.ghost{background:transparent;color:var(--muted);font-weight:600;font-size:.95rem;padding:10px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--slime);outline-offset:2px}
+#main{flex:1;width:100%;max-width:520px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding-block:12px}
+#shoot{width:min(78vw,52vh,360px);height:min(78vw,52vh,360px);border-radius:50%;padding:0;
+  background:radial-gradient(circle at 35% 30%,#ffb35c,var(--pumpkin) 45%,var(--pumpkinDeep));
+  box-shadow:0 10px 0 #7a3a00,0 18px 40px #000a;color:#2a1300;font:400 clamp(2.2rem,11vw,3.6rem)/1 var(--display);
+  display:flex;align-items:center;justify-content:center;text-align:center;transition:transform .08s,box-shadow .08s,filter .2s}
+#shoot:active{transform:translateY(8px);box-shadow:0 2px 0 #7a3a00,0 8px 20px #000a}
+#shoot:disabled{filter:grayscale(1) brightness(.55)}
+#msg{font:800 1.4rem var(--body);text-align:center;min-height:2.2em;text-wrap:balance}
+#conn{font-size:.95rem;display:flex;align-items:center;gap:8px;color:var(--muted)}
+#dot{width:12px;height:12px;border-radius:50%;background:var(--blood);flex:none}
+#dot.ok{background:var(--slime)} #dot.wait{background:var(--pumpkin)}
+.ok{color:var(--slime)} .bad{color:var(--blood)} .warn{color:var(--pumpkin)}
+footer{padding-block:8px 12px}
+@media (prefers-reduced-motion:reduce){#shoot{transition:none}}
+</style>
+</head>
+<body>
+
+<section id="setup">
+  <h1>Booth Remote</h1>
+  <p>On the photo booth phone, open the setup screen and find <b>Phone remote</b>. Type the 4-digit code shown there.</p>
+  <label for="code">Booth code
+    <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="0000">
+  </label>
+  <button id="btnConnect">Connect to the booth</button>
+  <div id="setupMsg" class="warn"></div>
+</section>
+
+<section id="main" hidden>
+  <div id="conn"><span id="dot"></span><span id="connText">Connecting…</span></div>
+  <button id="shoot" disabled>Take<br>photo!</button>
+  <div id="msg"></div>
+</section>
+
+<footer id="foot" hidden><button class="ghost" id="btnChange">Change booth code</button></footer>
+
+<script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+<script>
+"use strict";
+var RPRE = "kelly40-booth-";
+var $ = function(id){ return document.getElementById(id); };
+var peer = null, conn = null, code = null, boothState = null, retryTimer = null, msgTimer = null;
+
+function store(k, v){ try{ if(v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); }catch(e){ return null; } }
+
+function setConn(text, kind){ $("connText").textContent = text; $("dot").className = kind || ""; }
+function flashMsg(text, cls, ms){
+  var m = $("msg"); m.textContent = text; m.className = cls || "";
+  clearTimeout(msgTimer); if(ms) msgTimer = setTimeout(function(){ showState(); }, ms);
+}
+function showState(){
+  var b = $("shoot");
+  if(!conn || !conn.open){ b.disabled = true; return; }
+  if(boothState === "ready"){ b.disabled = false; flashMsg("Ready! Tap to start the countdown", "ok"); }
+  else if(boothState === "busy"){ b.disabled = true; flashMsg("Taking photos…", "warn"); }
+  else if(boothState === "setup"){ b.disabled = true; flashMsg("The booth isn't started yet. Tap Start the booth on the booth phone.", "warn"); }
+}
+
+function scheduleRetry(){
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(connect, 4000);
+}
+
+function connect(){
+  clearTimeout(retryTimer);
+  if(typeof Peer === "undefined"){ setConn("Can't load the connection library. Check this phone's internet.", ""); scheduleRetry(); return; }
+  setConn("Connecting to booth " + code + "…", "wait");
+  $("shoot").disabled = true;
+  if(!peer || peer.destroyed){
+    peer = new Peer({ debug: 1 });
+    peer.on("open", function(){ openConn(); });
+    peer.on("disconnected", function(){ try{ peer.reconnect(); }catch(e){} });
+    peer.on("error", function(err){
+      if(err.type === "peer-unavailable"){
+        setConn("Booth " + code + " not found. Check the code and that the booth page is open.", "");
+      } else {
+        setConn("Connection problem (" + err.type + "), retrying…", "wait");
+        try{ peer.destroy(); }catch(e){} peer = null;
+      }
+      scheduleRetry();
+    });
+  } else if(peer.open){
+    openConn();
+  }
+}
+
+function openConn(){
+  try{ if(conn) conn.close(); }catch(e){}
+  var c = peer.connect(RPRE + code, { reliable: true });
+  conn = c;
+  c.on("open", function(){
+    if(conn !== c) return;
+    setConn("Connected to booth " + code, "ok");
+    showState();
+  });
+  c.on("data", function(d){
+    if(!d) return;
+    if(d.type === "state"){ boothState = d.state; showState(); }
+    if(d.type === "ack"){
+      if(d.result === "started"){ boothState = "busy"; showState(); flashMsg("Countdown started. Strike a pose!", "ok"); }
+      else if(d.result === "busy") flashMsg("Hang on, still taking photos", "warn", 2000);
+      else if(d.result === "setup") flashMsg("The booth isn't started yet.", "warn", 3000);
+    }
+  });
+  c.on("close", function(){
+    if(conn !== c) return;
+    setConn("Lost the booth, reconnecting…", "wait"); $("shoot").disabled = true; scheduleRetry();
+  });
+  c.on("error", function(){ if(conn === c) scheduleRetry(); });
+}
+
+$("shoot").addEventListener("click", function(){
+  if(!conn || !conn.open){ flashMsg("Not connected yet", "bad", 2000); return; }
+  try{ conn.send({ type: "shoot" }); }catch(e){ flashMsg("Couldn't send. Reconnecting…", "bad", 2000); scheduleRetry(); return; }
+  if(navigator.vibrate) try{ navigator.vibrate(60); }catch(e){}
+  $("shoot").disabled = true;
+  flashMsg("Sent!", "ok");
+  // if the booth never answers, re-enable after a few seconds
+  setTimeout(function(){ if(boothState !== "busy") showState(); }, 3000);
+});
+
+function start(c){
+  code = c; store("boothCode", c);
+  $("setup").hidden = true; $("main").hidden = false; $("foot").hidden = false;
+  keepAwake();
+  connect();
+}
+$("btnConnect").addEventListener("click", function(){
+  var c = ($("code").value || "").replace(/\D/g, "");
+  if(c.length !== 4){ $("setupMsg").textContent = "Enter the 4-digit code from the booth phone."; return; }
+  start(c);
+});
+$("code").addEventListener("keydown", function(e){ if(e.key === "Enter") $("btnConnect").click(); });
+$("btnChange").addEventListener("click", function(){
+  clearTimeout(retryTimer);
+  try{ if(conn) conn.close(); }catch(e){} conn = null;
+  $("main").hidden = true; $("foot").hidden = true; $("setup").hidden = false;
+  $("code").value = code || ""; $("setupMsg").textContent = "";
+});
+
+// keep this phone's screen on where the browser allows it
+var wakeLock = null;
+function keepAwake(){
+  if(!("wakeLock" in navigator) || $("main").hidden) return;
+  if(wakeLock && !wakeLock.released) return;
+  navigator.wakeLock.request("screen").then(function(l){ wakeLock = l; l.addEventListener("release", function(){ setTimeout(keepAwake, 1000); }); }).catch(function(){});
+}
+document.addEventListener("visibilitychange", function(){
+  if(document.visibilityState === "visible" && code && !$("main").hidden){ keepAwake(); if(!conn || !conn.open) connect(); }
+});
+
+var saved = store("boothCode");
+if(saved && /^\d{4}$/.test(saved)){ $("code").value = saved; start(saved); }
+</script>
+</body>
+</html>
