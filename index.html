@@ -149,9 +149,27 @@ details summary{cursor:pointer;color:var(--muted)}
       <label>Second line <input id="t2" value="Halloween · 31.10.2026"></label>
     </div>
     <label>Bottom line <input id="t3" value="Thanks for haunting with us!"></label>
-    <label><span>Save full-colour photos to the phone</span>
-      <select id="saveColour"><option value="1">Yes, every photo</option><option value="0">No</option></select>
+    <label><span>Full-colour photos</span>
+      <select id="saveColour">
+        <option value="store">Keep them here, save to the phone later (no pop-ups)</option>
+        <option value="each">Download each photo straight away</option>
+        <option value="off">Don't keep colour photos</option>
+      </select>
     </label>
+  </div>
+
+  <div class="panel">
+    <h2>Party photos</h2>
+    <div id="phCount" class="status">Checking…</div>
+    <p style="margin:0;color:var(--muted);font-size:.9rem">Photos are kept inside this page in Chrome until you save them. They go to the phone's Download folder (back that folder up in Google Photos). Don't clear Chrome's site data or browsing history before saving them.</p>
+    <div class="row">
+      <button id="btnSaveNew" class="primary">Save new photos to phone</button>
+      <button id="btnSaveAll">Save all again</button>
+    </div>
+    <div class="row">
+      <button id="btnClear">Delete photos from this page…</button>
+      <span id="clearConfirm" hidden><button id="btnClearYes" style="background:var(--blood);color:#1a0006">Yes, delete them all</button> <button id="btnClearNo">Cancel</button></span>
+    </div>
   </div>
 
   <div class="panel">
@@ -494,17 +512,71 @@ function buildStrip(photos, mirror){
   ctx.font="600 18px Rubik, sans-serif"; ctx.fillText($("t3").value, W/2, h-FOOT+34);
   return cv;
 }
-let saveCount=0;
+/* ---------- photo store (IndexedDB) ---------- */
+let saveCount=0, dbp=null;
+function db(){
+  if(dbp) return dbp;
+  dbp=new Promise((res,rej)=>{
+    const r=indexedDB.open("booth-photos",1);
+    r.onupgradeneeded=()=>r.result.createObjectStore("photos",{keyPath:"id",autoIncrement:true});
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+  return dbp;
+}
+async function tx(mode, fn){
+  const d=await db();
+  return new Promise((res,rej)=>{ const t=d.transaction("photos",mode), st=t.objectStore("photos"); const out=fn(st); t.oncomplete=()=>res(out&&out.result!==undefined?out.result:out); t.onerror=()=>rej(t.error); });
+}
+async function allPhotos(){ const d=await db(); return new Promise((res,rej)=>{ const r=d.transaction("photos").objectStore("photos").getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+async function refreshCount(){
+  try{
+    const ph=await allPhotos(), unsaved=ph.filter(p=>!p.saved).length;
+    $("phCount").textContent = ph.length ? ph.length+" photo"+(ph.length===1?"":"s")+" kept here, "+unsaved+" not yet saved to the phone" : "No photos kept yet";
+    $("phCount").className = "status "+(unsaved?"warn":"ok");
+    $("btnSaveNew").textContent = unsaved ? "Save "+unsaved+" new photo"+(unsaved===1?"":"s")+" to phone" : "Save new photos to phone";
+  }catch(e){ $("phCount").textContent="Photo storage unavailable: "+e.message; $("phCount").className="status bad"; }
+}
+function downloadBlob(b, name){
+  const a=document.createElement("a"); a.href=URL.createObjectURL(b); a.download=name; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 10000);
+}
+let exporting=false;
+async function exportPhotos(onlyNew){
+  if(exporting) return; exporting=true;
+  try{
+    const ph=(await allPhotos()).filter(p=>!onlyNew || !p.saved);
+    if(!ph.length){ $("phCount").textContent="Nothing new to save"; return; }
+    for(let i=0;i<ph.length;i++){
+      $("phCount").textContent="Saving "+(i+1)+" of "+ph.length+"… keep this screen open"; $("phCount").className="status warn";
+      downloadBlob(ph[i].blob, ph[i].name);
+      ph[i].saved=true; await tx("readwrite", st=>st.put(ph[i]));
+      await sleep(450);
+    }
+    log("Saved "+ph.length+" photos to the phone");
+  }catch(e){ log("Save failed: "+e.message); }
+  finally{ exporting=false; refreshCount(); }
+}
+$("btnSaveNew").onclick=()=>exportPhotos(true);
+$("btnSaveAll").onclick=()=>exportPhotos(false);
+$("btnClear").onclick=()=>{ $("clearConfirm").hidden=false; };
+$("btnClearNo").onclick=()=>{ $("clearConfirm").hidden=true; };
+$("btnClearYes").onclick=async()=>{ $("clearConfirm").hidden=true; try{ await tx("readwrite", st=>st.clear()); log("Deleted kept photos"); }catch(e){} refreshCount(); };
+try{ navigator.storage && navigator.storage.persist && navigator.storage.persist().then(ok=>log("Persistent photo storage: "+(ok?"granted":"not granted"))); }catch(e){}
+refreshCount();
+
 function savePhoto(c, mirror){
-  if($("saveColour").value!=="1") return;
+  const mode=$("saveColour").value;
+  if(mode==="off") return;
   let out=c;
   if(mirror){ out=document.createElement("canvas"); out.width=c.width; out.height=c.height;
     const x=out.getContext("2d"); x.translate(c.width,0); x.scale(-1,1); x.drawImage(c,0,0); }
-  out.toBlob(b=>{
+  out.toBlob(async b=>{
     if(!b) return;
-    const a=document.createElement("a"), stamp=new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
-    a.href=URL.createObjectURL(b); a.download="booth-"+stamp+"-"+(++saveCount)+".jpg"; document.body.appendChild(a); a.click();
-    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 8000);
+    const stamp=new Date().toISOString().replace(/[:.]/g,"-").slice(0,19), name="booth-"+stamp+"-"+(++saveCount)+".jpg";
+    if(mode==="each"){ downloadBlob(b,name); return; }
+    try{ await tx("readwrite", st=>st.add({name, blob:b, saved:false, t:Date.now()})); }
+    catch(e){ log("Couldn't keep photo ("+e.message+"), downloading instead"); downloadBlob(b,name); }
+    refreshCount();
   },"image/jpeg",0.92);
 }
 
