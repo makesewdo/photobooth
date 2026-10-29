@@ -162,6 +162,15 @@ details summary{cursor:pointer;color:var(--muted)}
     <h2>Party photos</h2>
     <div id="phCount" class="status">Checking…</div>
     <p style="margin:0;color:var(--muted);font-size:.9rem">Photos are kept inside this page in Chrome until you save them. They go to the phone's Download folder (back that folder up in Google Photos). Don't clear Chrome's site data or browsing history before saving them.</p>
+    <label><span>Auto-save new photos to the phone</span>
+      <select id="autoSave">
+        <option value="60">Every hour</option>
+        <option value="30">Every 30 minutes</option>
+        <option value="15">Every 15 minutes</option>
+        <option value="0">Off (save by hand)</option>
+      </select>
+    </label>
+    <div id="autoInfo" style="color:var(--muted);font-size:.9rem"></div>
     <div class="row">
       <button id="btnSaveNew" class="primary">Save new photos to phone</button>
       <button id="btnSaveAll">Save all again</button>
@@ -228,7 +237,7 @@ function log(...a){ const s=a.join(" "); console.log(s); const el=$("log"); el.t
 function setStatus(msg, cls){ const el=$("pStatus"); el.textContent=msg; el.className="status "+(cls||""); $("pChip").textContent = msg; }
 
 /* ---------- saved settings ---------- */
-const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn","wave","waveSens"];
+const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn","wave","waveSens","autoSave"];
 try{ const s=JSON.parse(localStorage.getItem("booth")||"{}"); for(const k of SAVE_IDS) if(s[k]!=null) $(k).value=s[k]; }catch(e){}
 for(const k of SAVE_IDS){ const el=$(k); if(el.tagName==="SELECT" && el.selectedIndex<0) el.selectedIndex=0; } // old saved values that no longer exist
 function saveSettings(){ try{ const s={}; for(const k of SAVE_IDS) s[k]=$(k).value; localStorage.setItem("booth",JSON.stringify(s)); }catch(e){} }
@@ -563,6 +572,28 @@ $("btnClearNo").onclick=()=>{ $("clearConfirm").hidden=true; };
 $("btnClearYes").onclick=async()=>{ $("clearConfirm").hidden=true; try{ await tx("readwrite", st=>st.clear()); log("Deleted kept photos"); }catch(e){} refreshCount(); };
 try{ navigator.storage && navigator.storage.persist && navigator.storage.persist().then(ok=>log("Persistent photo storage: "+(ok?"granted":"not granted"))); }catch(e){}
 refreshCount();
+
+// Auto-save: every N minutes, save any unsaved photos, waiting until nobody is mid-photo
+let lastAuto=Date.now();
+try{ const v=+localStorage.getItem("boothLastAutoSave"); if(v) lastAuto=v; }catch(e){}
+function autoInfo(){
+  const mins=+$("autoSave").value;
+  if(!mins){ $("autoInfo").textContent="Auto-save is off."; return; }
+  const left=Math.max(0, Math.round((lastAuto+mins*60000-Date.now())/60000));
+  $("autoInfo").textContent="Next auto-save in about "+left+" min. Chrome shows its download pop-ups while it runs (roughly half a second per photo).";
+}
+async function autoTick(){
+  autoInfo();
+  const mins=+$("autoSave").value;
+  if(!mins || exporting || busy) return;
+  if(Date.now() < lastAuto+mins*60000) return;
+  let unsaved=0; try{ unsaved=(await allPhotos()).filter(p=>!p.saved).length; }catch(e){ return; }
+  lastAuto=Date.now(); try{ localStorage.setItem("boothLastAutoSave", String(lastAuto)); }catch(e){}
+  if(unsaved){ log("Auto-saving "+unsaved+" photos"); await exportPhotos(true); }
+}
+setInterval(autoTick, 20000);
+$("autoSave").addEventListener("change", ()=>{ lastAuto=Date.now(); try{ localStorage.setItem("boothLastAutoSave", String(lastAuto)); }catch(e){} autoInfo(); });
+autoInfo();
 
 function savePhoto(c, mirror){
   const mode=$("saveColour").value;
