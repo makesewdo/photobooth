@@ -129,7 +129,7 @@ details summary{cursor:pointer;color:var(--muted)}
     </div>
   </div>
 
-  <div class="panel" hidden>
+  <div class="panel">
     <h2>Wave to start (backup trigger)</h2>
     <p style="margin:0;color:var(--muted)">Waving a hand in the strip across the top of the picture starts the countdown. Frame the shot so heads sit below the dashed bar on the booth screen, so posing doesn't set it off.</p>
     <div class="row">
@@ -744,7 +744,7 @@ const wctx=wcv.getContext("2d",{willReadFrequently:true});
 let prevLum=null, waveHits=0, waveCooldownUntil=0;
 // Bar across the top of what's visible on screen, as fractions of the screen
 const WAVE_BAR={ x:0.02, y:0.02, w:0.96, h:0.2 };
-function waveOn(){ return false; } // wave trigger disabled (wind kept setting it off)
+function waveOn(){ return $("wave").value==="top"; }
 function placeWaveZone(){
   const el=$("waveZone");
   if(!waveOn() || !video.videoWidth){ el.hidden=true; return; }
