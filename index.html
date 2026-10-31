@@ -43,8 +43,8 @@ details summary{cursor:pointer;color:var(--muted)}
 
 /* Booth */
 #booth{position:fixed;inset:0;background:#000;z-index:5;touch-action:none;user-select:none;-webkit-user-select:none}
-#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain} /* show the whole camera picture, exactly what gets printed */
-#video.mirror{transform:scaleX(-1)}
+#vwrap{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden} /* sized by JS to the picture area: exactly what gets printed */
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform-origin:50% 50%}
 #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;
   padding:env(safe-area-inset-top,0px) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0px) max(16px,env(safe-area-inset-left,0px));pointer-events:none}
 #count{font-family:var(--display);font-size:min(45vw,45vh);color:var(--pumpkin);line-height:1;text-shadow:0 0 30px #000,0 0 6px #000}
@@ -116,6 +116,9 @@ details summary{cursor:pointer;color:var(--muted)}
     <div class="row">
       <label>Camera
         <select id="facing"><option value="environment">Rear (better quality)</option><option value="user">Front (selfie)</option></select>
+      </label>
+      <label>Zoom (screen and print)
+        <select id="zoom"><option value="1">None</option><option value="1.1">1.1×</option><option value="1.2">1.2×</option><option value="1.3">1.3×</option><option value="1.4">1.4×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select>
       </label>
       <label>Shots per strip
         <select id="shots"><option>2</option><option selected>3</option><option>4</option></select>
@@ -212,7 +215,7 @@ details summary{cursor:pointer;color:var(--muted)}
 </section>
 
 <section id="booth" hidden>
-  <video id="video" playsinline muted autoplay></video>
+  <div id="vwrap"><video id="video" playsinline muted autoplay></video></div>
   <div id="waveZone" hidden>WAVE UP HERE</div>
   <div id="flash"></div>
   <div id="overlay">
@@ -237,7 +240,7 @@ function log(...a){ const s=a.join(" "); console.log(s); const el=$("log"); el.t
 function setStatus(msg, cls){ const el=$("pStatus"); el.textContent=msg; el.className="status "+(cls||""); $("pChip").textContent = msg; }
 
 /* ---------- saved settings ---------- */
-const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn","wave","waveSens","autoSave"];
+const SAVE_IDS=["proto","dark","bright","flip","delay","facing","shots","cd","t1","t2","t3","saveColour","beep","printOn","wave","waveSens","autoSave","zoom"];
 try{ const s=JSON.parse(localStorage.getItem("booth")||"{}"); for(const k of SAVE_IDS) if(s[k]!=null) $(k).value=s[k]; }catch(e){}
 for(const k of SAVE_IDS){ const el=$(k); if(el.tagName==="SELECT" && el.selectedIndex<0) el.selectedIndex=0; } // old saved values that no longer exist
 function saveSettings(){ try{ const s={}; for(const k of SAVE_IDS) s[k]=$(k).value; localStorage.setItem("booth",JSON.stringify(s)); }catch(e){} }
@@ -662,8 +665,21 @@ async function startCamera(){
   if(stream) stream.getTracks().forEach(t=>t.stop());
   stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:$("facing").value, width:{ideal:1920}, height:{ideal:1440} }, audio:false });
   video.srcObject=stream; await video.play();
-  video.classList.toggle("mirror", $("facing").value==="user");
+  layoutVideo();
 }
+function zoomVal(){ const z=parseFloat($("zoom").value); return z>=1 ? z : 1; }
+// Size the picture box to the whole camera frame (letterboxed), then zoom into its centre
+function layoutVideo(){
+  const vw=video.videoWidth, vh=video.videoHeight, bw=$("booth").clientWidth, bh=$("booth").clientHeight;
+  if(!vw || !bw) return;
+  const sc=Math.min(bw/vw, bh/vh), dw=vw*sc, dh=vh*sc;
+  Object.assign($("vwrap").style,{ left:((bw-dw)/2)+"px", top:((bh-dh)/2)+"px", width:dw+"px", height:dh+"px" });
+  const z=zoomVal(), mx=$("facing").value==="user" ? -z : z;
+  video.style.transform="scale("+mx+","+z+")";
+}
+window.addEventListener("resize", layoutVideo);
+video.addEventListener("loadedmetadata", layoutVideo);
+$("zoom").addEventListener("change", layoutVideo);
 // Keep the screen on while the booth is open; re-take the lock whenever Android drops it
 async function keepAwake(){
   if($("booth").hidden || !("wakeLock" in navigator)) return;
@@ -706,8 +722,10 @@ window.addEventListener("beforeunload", e=>{ if(!$("booth").hidden || P.device){
 function idle(){ $("count").textContent=""; $("shotInfo").textContent=""; $("prompt").textContent = "Press the button!"; }
 
 function grab(){
-  const c=document.createElement("canvas"); c.width=video.videoWidth; c.height=video.videoHeight;
-  c.getContext("2d").drawImage(video,0,0); return c;
+  // capture only the zoomed-in centre, matching what's on screen
+  const vw=video.videoWidth, vh=video.videoHeight, z=zoomVal(), sw=Math.round(vw/z), sh=Math.round(vh/z);
+  const c=document.createElement("canvas"); c.width=sw; c.height=sh;
+  c.getContext("2d").drawImage(video,(vw-sw)/2,(vh-sh)/2,sw,sh,0,0,sw,sh); return c;
 }
 async function runSession(){
   unlockAudio(); keepAwake();
@@ -748,15 +766,14 @@ function waveOn(){ return $("wave").value==="top"; }
 function placeWaveZone(){
   const el=$("waveZone");
   if(!waveOn() || !video.videoWidth){ el.hidden=true; return; }
-  const cw=video.clientWidth, ch=video.clientHeight, vw=video.videoWidth, vh=video.videoHeight, z=WAVE_BAR;
-  const sc=Math.min(cw/vw, ch/vh), dw=vw*sc, dh=vh*sc, ox=(cw-dw)/2, oy=(ch-dh)/2; // the visible picture inside any black bars
+  const wr=$("vwrap"), dw=wr.clientWidth, dh=wr.clientHeight, ox=wr.offsetLeft, oy=wr.offsetTop, z=WAVE_BAR; // the visible picture box
   Object.assign(el.style,{ left:(ox+z.x*dw)+"px", top:(oy+z.y*dh)+"px", width:(z.w*dw)+"px", height:(z.h*dh)+"px" });
   el.hidden=false;
 }
 // The whole camera picture is shown, so the bar's fractions map straight onto the camera frame
 function waveZoneFrame(){
-  const z=WAVE_BAR;
-  let x=z.x; const w=z.w, y=z.y, h=z.h;
+  const z=WAVE_BAR, k=1/zoomVal(), o=(1-k)/2; // on-screen fractions -> camera frame through the centre zoom
+  let x=o+z.x*k; const w=z.w*k, y=o+z.y*k, h=z.h*k;
   if($("facing").value==="user") x=1-x-w; // front camera is shown mirrored
   return {x,y,w,h};
 }
