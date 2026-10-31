@@ -329,9 +329,16 @@ async function gattConnect(){
     P.ch2.addEventListener("characteristicvaluechanged", onNotify);
   }
 }
+function withTimeout(promise, ms, msg){
+  let t; return Promise.race([promise, new Promise((_,rej)=>{ t=setTimeout(()=>rej(new Error(msg)), ms); })]).finally(()=>clearTimeout(t));
+}
 async function ensureConnected(){
   if(!P.device) throw new Error("No printer chosen yet");
-  if(!P.device.gatt.connected){ log("Reconnecting…"); await gattConnect(); await sleep(300); }
+  if(!P.device.gatt.connected){
+    log("Reconnecting…");
+    await withTimeout(gattConnect(), 12000, "Printer didn't answer. Is it switched on and charged?");
+    await sleep(300);
+  }
 }
 async function detectKind(){
   const pref=$("proto").value;
@@ -359,6 +366,7 @@ $("btnConnect").onclick = async ()=>{
     log("Device: "+(P.device.name||"?")+" · protocol: "+P.kind);
     setStatus("Connected to "+(P.device.name||"printer")+" ("+kindName(P.kind)+" protocol)","ok");
     $("btnTest").disabled=false;
+    if(queue.length){ log("Resuming "+queue.length+" waiting strip(s)"); queueStalled=false; runQueue(); }
   }catch(e){ log("Connect failed: "+e.message); setStatus("Couldn't connect: "+e.message+". Check the printer is on and Fun Print is closed, then try again.","bad"); }
 };
 
@@ -425,32 +433,52 @@ async function printEscPos(rows){
 let printing=false;
 const queue=[];
 // Strips wait here and print one after another, so the booth can keep taking photos meanwhile
-function enqueuePrint(cv){ queue.push(cv); updateQueueInfo(); if(!printing) runQueue(); }
+let queueRunning=false, queueStalled=false;
+function enqueuePrint(cv){ queue.push(cv); updateQueueInfo(); if(!queueRunning && !queueStalled) runQueue(); }
 async function runQueue(){
-  while(queue.length){
-    const cv=queue.shift(); updateQueueInfo();
-    await printCanvas(cv);
-  }
-  updateQueueInfo();
+  if(queueRunning) return; queueRunning=true; queueStalled=false;
+  try{
+    while(queue.length){
+      const cv=queue[0]; updateQueueInfo();
+      const ok=await printCanvas(cv);
+      if(ok) queue.shift();
+      else {
+        // keep the strip; wait for the printer to be reconnected
+        queueStalled=true;
+        setStatus("Printer not responding: "+queue.length+" strip"+(queue.length===1?"":"s")+" waiting. Check it's on, then tap Connect printer.","bad");
+        $("pChip").textContent="Printer problem: "+queue.length+" waiting";
+        break;
+      }
+    }
+  } finally { queueRunning=false; updateQueueInfo(); }
 }
 function updateQueueInfo(){
   const waiting=queue.length+(printing?1:0);
+  if(queueStalled) return;
   if(P.device && waiting) $("pChip").textContent = waiting===1 ? "Printing 1 strip" : "Printing… "+waiting+" strips in the queue";
 }
 async function printCanvas(cv){
   const rows = toRows(cv);
   $("lastStrip").src = cv.toDataURL(); $("lastPanel").hidden=false;
-  if(!P.device){ setStatus("Strip ready but no printer connected","warn"); return; }
+  if(!P.device){ setStatus("Strip ready but no printer connected","warn"); return true; }
   printing=true; updateQueueInfo();
   try{
     await ensureConnected();
     if(!P.kind) P.kind = await detectKind();
     setStatus("Printing…","warn");
-    if(P.kind==="mxw") await printMxw(rows);
-    else if(P.kind==="escpos"){ if(!P.esc) throw new Error("This printer is a cat printer; set Protocol to Auto-detect"); await printEscPos(rows); }
-    else { if(P.esc) throw new Error("This printer isn't a cat printer; set Protocol to Auto-detect or Receipt-style"); await printClassic(rows); }
+    let job;
+    if(P.kind==="mxw") job=printMxw(rows);
+    else if(P.kind==="escpos"){ if(!P.esc) throw new Error("This printer is a cat printer; set Protocol to Auto-detect"); job=printEscPos(rows); }
+    else { if(P.esc) throw new Error("This printer isn't a cat printer; set Protocol to Auto-detect or Receipt-style"); job=printClassic(rows); }
+    await withTimeout(job, 90000, "Printing took too long. The printer may have switched off");
     setStatus("Printer ready ("+(P.device.name||"printer")+")","ok");
-  }catch(e){ log("Print failed: "+e.message); setStatus("Print failed: "+e.message,"bad"); }
+    return true;
+  }catch(e){
+    log("Print failed: "+e.message); setStatus("Print failed: "+e.message,"bad");
+    try{ P.device.gatt.disconnect(); }catch(_){}
+    P.paused=false;
+    return false;
+  }
   finally{ printing=false; }
 }
 
