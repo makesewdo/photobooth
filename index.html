@@ -43,7 +43,7 @@ details summary{cursor:pointer;color:var(--muted)}
 
 /* Booth */
 #booth{position:fixed;inset:0;background:#000;z-index:5;touch-action:none;user-select:none;-webkit-user-select:none}
-#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain} /* show the whole camera picture, exactly what gets printed */
 #video.mirror{transform:scaleX(-1)}
 #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;
   padding:env(safe-area-inset-top,0px) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0px) max(16px,env(safe-area-inset-left,0px));pointer-events:none}
@@ -748,15 +748,15 @@ function waveOn(){ return $("wave").value==="top"; }
 function placeWaveZone(){
   const el=$("waveZone");
   if(!waveOn() || !video.videoWidth){ el.hidden=true; return; }
-  const cw=video.clientWidth, ch=video.clientHeight, z=WAVE_BAR;
-  Object.assign(el.style,{ left:(z.x*cw)+"px", top:(z.y*ch)+"px", width:(z.w*cw)+"px", height:(z.h*ch)+"px" });
+  const cw=video.clientWidth, ch=video.clientHeight, vw=video.videoWidth, vh=video.videoHeight, z=WAVE_BAR;
+  const sc=Math.min(cw/vw, ch/vh), dw=vw*sc, dh=vh*sc, ox=(cw-dw)/2, oy=(ch-dh)/2; // the visible picture inside any black bars
+  Object.assign(el.style,{ left:(ox+z.x*dw)+"px", top:(oy+z.y*dh)+"px", width:(z.w*dw)+"px", height:(z.h*dh)+"px" });
   el.hidden=false;
 }
-// Convert the on-screen bar into camera-frame fractions (the picture is cropped to fill the screen)
+// The whole camera picture is shown, so the bar's fractions map straight onto the camera frame
 function waveZoneFrame(){
-  const cw=video.clientWidth, ch=video.clientHeight, vw=video.videoWidth, vh=video.videoHeight;
-  const sc=Math.max(cw/vw, ch/vh), visW=cw/(vw*sc), visH=ch/(vh*sc), offX=(1-visW)/2, offY=(1-visH)/2, z=WAVE_BAR;
-  let x=offX+z.x*visW; const w=z.w*visW, y=offY+z.y*visH, h=z.h*visH;
+  const z=WAVE_BAR;
+  let x=z.x; const w=z.w, y=z.y, h=z.h;
   if($("facing").value==="user") x=1-x-w; // front camera is shown mirrored
   return {x,y,w,h};
 }
